@@ -49,24 +49,34 @@ if [[ $want_pack == false && $want_mtp == false ]]; then
   exit 0
 fi
 
+if declare -F qwen38_prepare_dependencies >/dev/null; then qwen38_prepare_dependencies; fi
+
+publish_pack() {
+  # Older GNU mv may report a skipped -n move as success. The staging
+  # directory disappearing, not just the exit status, confirms publication.
+  if ! mv -nT -- "$1" "$2" || [[ -e $1 ]]; then
+    qwen38_fail "Could not publish $2 without replacing an existing pack."
+  fi
+}
+
 mkdir -p -- "$out"
 work=$(mktemp -d -- "$out/.prepare.XXXXXXXX")
 trap 'rm -rf -- "$work"' EXIT
 if [[ $want_pack == true ]]; then
-  python "$qwen38_pack_tools/iq_pack.py" --gguf "$STRATA_MODEL" --out "$work/pack"
+  "${qwen38_python:-python}" "$qwen38_pack_tools/iq_pack.py" --gguf "$STRATA_MODEL" --out "$work/pack"
   cp -- "$qwen38_pack_data/expert-profile.bin" "$work/pack/expert-profile.bin"
   qwen38_check_pack pack "$work/pack"
-  mv -T --update=none-fail -- "$work/pack" "$out/pack"
+  publish_pack "$work/pack" "$out/pack"
   echo "Prepared $out/pack"
 fi
 if [[ $want_mtp == true ]]; then
   if [[ -d $draft ]]; then
-    python "$qwen38_pack_tools/mtp_pack.py" --src "$draft" --experts q2_0 --out "$work/mtp-q2_0.gguf"
+    "${qwen38_python:-python}" "$qwen38_pack_tools/mtp_pack.py" --src "$draft" --experts q2_0 --out "$work/mtp-q2_0.gguf"
     draft=$work/mtp-q2_0.gguf
   fi
-  python "$qwen38_pack_tools/mtp_rt.py" --gguf "$draft" --out "$work/mtp"
+  "${qwen38_python:-python}" "$qwen38_pack_tools/mtp_rt.py" --gguf "$draft" --out "$work/mtp"
   cp -- "$qwen38_pack_data/draft_vocab.bin" "$work/mtp/draft_vocab.bin"
   qwen38_check_pack mtp "$work/mtp"
-  mv -T --update=none-fail -- "$work/mtp" "$out/mtp"
+  publish_pack "$work/mtp" "$out/mtp"
   echo "Prepared $out/mtp"
 fi

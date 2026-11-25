@@ -1,8 +1,16 @@
 # shellcheck shell=bash
 # Lifecycle dispatch stays outside engine/model closures and never loads .env.
 strata_service_dispatch() {
-  local unit=$1 foreground_service=$2 target=$3
-  shift 3
+  strata_service_dispatch_as nix "$@"
+}
+
+strata_service_dispatch_local() {
+  strata_service_dispatch_as local "$@"
+}
+
+strata_service_dispatch_as() {
+  local mode=$1 unit=$2 foreground_service=$3 target=$4
+  shift 4
   local action=foreground
   case ${1:-} in
     start|stop|status|logs) action=$1; shift ;;
@@ -72,7 +80,10 @@ EOF
   # always resets it, so an inherited value cannot change the default mode.
   export STRATA_SERVICE_MODE=$action
   unset STRATA_SERVICE_ROOT
-  exec nix run "$target" -- "$@"
+  if [[ $mode == nix ]]; then
+    exec nix run "$target" -- "$@"
+  fi
+  "$target" "$@"
 }
 
 # Qwen3.6 retains direct foreground execution without a systemd policy.
@@ -88,18 +99,32 @@ strata_service_or_exec() {
 # Called only by the resolved server launcher, after loading trusted config.
 # The caller supplies policy properties separately from the server command.
 strata_service_run() {
-  local unit=$1
-  shift
+  strata_service_run_as nix "$@"
+}
+
+strata_service_run_local() {
+  strata_service_run_as local "$@"
+}
+
+strata_service_run_as() {
+  local mode=$1 unit=$2 variable
+  shift 2
   local -a options=(--user --collect --unit="$unit" --working-directory="$PWD")
+  if [[ $mode == local ]]; then
+    for variable in LD_LIBRARY_PATH HIP_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES CUDA_VISIBLE_DEVICES GPU_DEVICE_ORDINAL; do
+      if [[ -v $variable ]]; then options+=(--setenv="$variable=${!variable}"); fi
+    done
+  fi
   if [[ ${STRATA_SERVICE_MODE:-foreground} == start ]]; then
-    # A detached nix run exits before the server does. Keep the complete
-    # launcher closure rooted until systemd removes this runtime directory.
-    local nix_store root_path="${XDG_RUNTIME_DIR:-/run/user/$UID}/$unit/closure"
-    nix_store=$(command -v nix-store) || return
     options+=(--service-type=exec -p StandardInput=null
-      -p StandardOutput=journal -p StandardError=journal
-      -p "RuntimeDirectory=$unit"
-      -p "ExecStartPre=$nix_store --add-root \"$root_path\" --indirect --realise ${STRATA_SERVICE_ROOT:?Missing service closure}")
+      -p StandardOutput=journal -p StandardError=journal)
+    if [[ $mode == nix ]]; then
+      # Keep the Nix launcher closure rooted until systemd removes the runtime directory.
+      local nix_store root_path="${XDG_RUNTIME_DIR:-/run/user/$UID}/$unit/closure"
+      nix_store=$(command -v nix-store) || return
+      options+=(-p "RuntimeDirectory=$unit"
+        -p "ExecStartPre=$nix_store --add-root \"$root_path\" --indirect --realise ${STRATA_SERVICE_ROOT:?Missing service closure}")
+    fi
     systemd-run "${options[@]}" "$@" || return
     echo 'Server started. Model loading may take several minutes; API readiness is not yet confirmed.'
     echo "Logs: journalctl --user -u $unit -f"

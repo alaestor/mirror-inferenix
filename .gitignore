@@ -3,3 +3,7 @@
 result
 result-*
 /dist/
+/native/.work/
+/.venv/
+/models/
+/qwen38-packs/

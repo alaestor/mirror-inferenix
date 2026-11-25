@@ -21,6 +21,8 @@ if [[ "$model" != *.gguf || ! -f "$model" || ! -r "$model" ]]; then
   exit 1
 fi
 
+if declare -F inkling2mini_preflight >/dev/null; then inkling2mini_preflight; fi
+
 # shellcheck disable=SC2154
 if [[ ! -x "$inkling2mini_frontend" || ! -x "$inkling2mini_engine" ]]; then
   echo "Missing Inkling engine or frontend." >&2

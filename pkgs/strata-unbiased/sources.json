@@ -1,0 +1,22 @@
+{
+  "version": "0.1.45-poly.1",
+  "upstream": {
+    "owner": "robertkarl",
+    "repo": "UnbiasedStrata",
+    "rev": "9f75192287c2abf88c77da3b4b6f54ccee01db83",
+    "hash": "sha256-RI2/+EHPL1DmXtEUf/l+JC31nNSnffPZocYt8kkEOG0=",
+    "archiveSha256": "81d2e2374cb93df0bd9d30714c0d5cfa654041c0016b16c7f92bfff5bd74140f"
+  },
+  "llama": {
+    "owner": "robertkarl",
+    "repo": "llama.cpp",
+    "rev": "db1f382bb25f9cc481893105dbead09c86a52f01",
+    "hash": "sha256-Him+wiXA84lA638Ltql3Guzr5FEEe+CbTgN+0SXr9ng=",
+    "archiveSha256": "9f3de029b510b56a02ac58ee7e4f4be6e1f17e94d6306148e8c251b343569012"
+  },
+  "patches": [
+    "0001-hip-build.patch",
+    "0002-frontend-sampling-and-inkling-vocab.patch",
+    "0003-fp16-parity-diagnostics.patch"
+  ]
+}

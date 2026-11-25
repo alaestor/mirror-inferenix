@@ -24,6 +24,9 @@ systemd user manager for more control of system resource consumption.
 
 ## Run a model
 
+Building without Nix or Podman? Start with the [native Linux guide](native/README.md).
+It covers Inkling 2 Mini and Qwen3.8 on openSUSE and other Linux distros.
+
 Launchers source the selected file as Bash.
 
 ```sh

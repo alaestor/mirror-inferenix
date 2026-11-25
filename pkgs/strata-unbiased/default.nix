@@ -10,12 +10,9 @@
 }:
 let
   rocm = rocmPackages;
-  llamaSource = fetchFromGitHub {
-    owner = "robertkarl";
-    repo = "llama.cpp";
-    rev = "db1f382bb25f9cc481893105dbead09c86a52f01";
-    hash = "sha256-Him+wiXA84lA638Ltql3Guzr5FEEe+CbTgN+0SXr9ng=";
-  };
+  pins = builtins.fromJSON (builtins.readFile ./sources.json);
+  githubSource = pin: fetchFromGitHub { inherit (pin) owner repo rev hash; };
+  llamaSource = githubSource pins.llama;
   targets = [
     "unbiased-strata"
   ]
@@ -28,19 +25,10 @@ let
 in
 stdenv.mkDerivation {
   pname = if frontendOnly then "unbiased-strata-frontend" else "unbiased-strata-hip";
-  version = "0.1.45-poly.1";
-  src = fetchFromGitHub {
-    owner = "robertkarl";
-    repo = "UnbiasedStrata";
-    rev = "9f75192287c2abf88c77da3b4b6f54ccee01db83";
-    hash = "sha256-RI2/+EHPL1DmXtEUf/l+JC31nNSnffPZocYt8kkEOG0=";
-  };
+  inherit (pins) version;
+  src = githubSource pins.upstream;
 
-  patches = [
-    ./patches/0001-hip-build.patch
-    ./patches/0002-frontend-sampling-and-inkling-vocab.patch
-    ./patches/0003-fp16-parity-diagnostics.patch
-  ];
+  patches = map (patch: ./patches + "/${patch}") pins.patches;
   nativeBuildInputs = [
     cmake
     ninja

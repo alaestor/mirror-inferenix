@@ -31,12 +31,16 @@ cat > "$work/bin/journalctl" <<'MOCK'
 #!/usr/bin/env bash
 printf '%s\n' journalctl "$@" >> "$SERVICE_CALLS"
 MOCK
-for mock in systemctl nix systemd-run journalctl; do
+cat > "$work/bin/local-serve" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$STRATA_SERVICE_MODE" "$@" >> "$SERVICE_CALLS"
+MOCK
+for mock in systemctl nix systemd-run journalctl local-serve; do
   # Generated executables must also work in a Nix sandbox without /usr/bin/env.
   sed -i "1c\\#!$(command -v bash)" "$work/bin/$mock"
 done
 touch "$work/bin/nix-store"
-chmod +x "$work/bin/systemctl" "$work/bin/nix" "$work/bin/systemd-run" "$work/bin/journalctl" "$work/bin/nix-store"
+chmod +x "$work/bin/systemctl" "$work/bin/nix" "$work/bin/systemd-run" "$work/bin/journalctl" "$work/bin/nix-store" "$work/bin/local-serve"
 export PATH="$work/bin:$PATH"
 cd "$work"
 # Controls must not read config or require a model.
@@ -139,4 +143,18 @@ run 0 strata_service_or_exec strata-qwen36.service "$work/bin/systemd-run" direc
 has direct-server
 absent --collect
 absent systemctl
-printf '%s\n' 'PASS: Nix lifecycle dispatch, argument routing, and service policies'
+
+# The native dispatcher resolves a local command, with the same lifecycle and
+# memory policy but without Nix dispatch or store roots.
+run 0 strata_service_dispatch_local strata-qwen38.service true "$work/bin/local-serve" start 'model path.gguf'
+has start
+has 'model path.gguf'
+absent nix
+export STRATA_SERVICE_MODE=start HIP_VISIBLE_DEVICES=0
+run 0 strata_service_run_local strata-qwen38.service -p MemoryMax=48G -p MemorySwapMax=0 /bin/server
+has MemoryMax=48G
+has MemorySwapMax=0
+has --setenv=HIP_VISIBLE_DEVICES=0
+absent RuntimeDirectory=strata-qwen38.service
+if grep -Fq 'nix-store' "$SERVICE_CALLS"; then exit 1; fi
+printf '%s\n' 'PASS: Nix and native lifecycle dispatch, argument routing, and service policies'

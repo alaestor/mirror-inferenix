@@ -23,7 +23,7 @@ strata_check_memory_controller() {
        ! read -r current < "$path/memory.current" ||
        [[ ! $current =~ ^[0-9]+$ || ( $limit != max && ! $limit =~ ^[0-9]+$ ) ]]; then
       echo "Strata: missing or unreadable memory controller files in $path." >&2
-      echo 'Enable memory accounting on the parent user slices and app.slice; refresh the user manager with systemctl --user daemon-reexec. See packaging/README.md (Memory controller setup).' >&2
+      echo 'Check memory accounting on the parent slices and app.slice. See native/README.md (Qwen service troubleshooting).' >&2
       return 1
     fi
     if [[ $limit != max ]]; then

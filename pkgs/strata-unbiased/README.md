@@ -1,7 +1,12 @@
 # UnbiasedStrata
 
-[`default.nix`](default.nix) pins robertkarl/UnbiasedStrata at `9f75192` and
-fetches the exact llama.cpp revision recorded by that commit. It builds the
+[`sources.json`](sources.json) pins robertkarl/UnbiasedStrata at `9f75192` and
+the exact llama.cpp revision recorded by that commit. Nix and the native
+builder share these pins and the ordered patch list. Nix verifies the
+unpacked trees with `hash`; the native fetcher verifies archive bytes with
+`archiveSha256`. Check both digests when updating either source.
+
+[`default.nix`](default.nix) builds the
 Qwen HIP engines and HTTP frontend, or just the CPU frontend for the Inkling
 runner. The Qwen packing tools and small runtime data come from that same
 source pin.

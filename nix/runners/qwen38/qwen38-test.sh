@@ -32,6 +32,11 @@ run_prepare() (
         if [[ ${FAIL_PACK:-} ]]; then return 42; fi
         printf data > "$out/index.txt"
         printf data > "$out/native_experts.txt"
+        if [[ ${RACE_PACK:-} ]]; then
+          local staging=${out%/*}
+          mkdir "${staging%/*}/pack"
+          printf winner > "${staging%/*}/pack/dense.bin"
+        fi
         ;;
       tools/mtp_pack.py)
         [[ $in == raw ]]
@@ -86,6 +91,15 @@ status=$?
 set -e
 [[ $status == 42 ]]
 [[ -d failed && -z $(ls -A failed) ]]
+
+# Another preparer can publish after the initial check. Keep that pack intact.
+set +e
+RACE_PACK=1 run_prepare 'model shard.gguf' racing > stdout 2> stderr
+status=$?
+set -e
+[[ $status == 2 && $(cat racing/pack/dense.bin) == winner ]]
+[[ $(ls -A racing) == pack && ! -s stdout ]]
+grep -F 'Could not publish' stderr
 
 # Prepare may produce a pack without a draft, and can fill in the draft later.
 run_prepare 'model shard.gguf' nodraft > stdout 2> stderr

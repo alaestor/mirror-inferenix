@@ -30,6 +30,10 @@ when launching a runner. Do not add runtime routing.
 - Keep OCI definitions and Podman instructions in `oci/`. Reuse native
   runner settings. Build images without models or packs; prepare writes a
   host cache and serve opens it read-only.
+- Keep non-Nix build scripts and their user guide in `native/`. Reuse pins
+  and patch order from `pkgs/` and Bash runner policy from `nix/runners/`.
+  The native fetch step verifies source archives; build, prepare, and serve
+  use local inputs. Check for host dependencies without installing them.
 
 ## Trust boundaries and validation
 

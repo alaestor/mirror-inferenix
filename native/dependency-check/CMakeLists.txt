@@ -1,0 +1,58 @@
+cmake_minimum_required(VERSION 3.24)
+project(strata_native_dependency_check LANGUAGES C CXX)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+find_package(Threads QUIET)
+if(NOT TARGET Threads::Threads)
+  message(FATAL_ERROR "Strata dependency: CMake could not link a threads program. Check the C/C++ toolchain and system development headers.")
+endif()
+add_executable(check-host host.cpp)
+target_link_libraries(check-host PRIVATE Threads::Threads)
+
+if(STRATA_CHECK_MODEL STREQUAL "qwen38")
+  enable_language(HIP)
+  find_package(hip CONFIG QUIET)
+  if(NOT TARGET hip::host)
+    message(FATAL_ERROR "Strata dependency: missing HIP development package.")
+  endif()
+  find_package(hipblas CONFIG QUIET)
+  if(NOT TARGET roc::hipblas)
+    message(FATAL_ERROR "Strata dependency: missing hipBLAS development package.")
+  endif()
+  add_executable(check-hip check.hip)
+  target_compile_definitions(check-hip PRIVATE CHECK_HIPBLAS)
+  target_link_libraries(check-hip PRIVATE hip::host roc::hipblas)
+  if(hipblas_VERSION VERSION_LESS "1.0")
+    find_package(rocblas CONFIG QUIET)
+    if(NOT TARGET roc::rocblas)
+      message(FATAL_ERROR "Strata dependency: this hipBLAS version requires rocBLAS.")
+    endif()
+    target_link_libraries(check-hip PRIVATE roc::rocblas)
+  endif()
+elseif(STRATA_CHECK_MODEL STREQUAL "inkling2mini")
+  # Like the standalone engine, accept either compiler name and let CMake
+  # search the system and ROCm prefixes if the user did not pick one.
+  if(NOT STRATA_HIP_CXX)
+    find_program(STRATA_HIP_CXX NAMES hipcc clang++ HINTS
+      "$ENV{ROCM_PATH}/bin" "$ENV{ROCM_PATH}/llvm/bin" /opt/rocm/bin /opt/rocm/llvm/bin)
+  endif()
+  if(NOT STRATA_HIP_CXX)
+    message(FATAL_ERROR "Strata dependency: no HIP compiler found. Check ROCM_PATH, PATH or INFERENIX_NATIVE_HIPCC.")
+  endif()
+  # Link with the host C++ compiler, as the standalone engine does.
+  find_library(runtime NAMES amdhip64 amdhip64_7 amdhip64_6
+    HINTS "$ENV{ROCM_PATH}/lib" /opt/rocm/lib)
+  if(NOT runtime)
+    message(FATAL_ERROR "Strata dependency: libamdhip64 not found. Check ROCM_PATH.")
+  endif()
+  add_custom_command(OUTPUT check.o
+    COMMAND "${STRATA_HIP_CXX}" -x hip -std=c++20
+      "--offload-arch=${CMAKE_HIP_ARCHITECTURES}"
+      -c "${CMAKE_CURRENT_SOURCE_DIR}/check.hip" -o check.o
+    DEPENDS check.hip VERBATIM)
+  add_executable(check-hip check.o)
+  set_target_properties(check-hip PROPERTIES LINKER_LANGUAGE CXX)
+  target_link_libraries(check-hip PRIVATE "${runtime}")
+else()
+  message(FATAL_ERROR "Unknown native build dependency check: ${STRATA_CHECK_MODEL}")
+endif()
