@@ -1,0 +1,2 @@
+# Patch context starts with a space, including blank and tab-indented lines.
+*.patch whitespace=-blank-at-eol,-space-before-tab

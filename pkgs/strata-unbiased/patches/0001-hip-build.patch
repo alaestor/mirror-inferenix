@@ -1,0 +1,70 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 48743eec2e6f999376dd1fccd85baa6c4c4d4dd3..9682469415a9292b962940cf040e65be20f36de2 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -721,8 +721,10 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
+     target_compile_definitions(strata_prefill PRIVATE STRATA_HIPBLASLT_AVAILABLE=1)
+     target_link_libraries(strata_prefill PRIVATE roc::hipblaslt)
+ 
+-    add_executable(tune_hipblaslt tools/hip/tune_hipblaslt.cpp)
+-    target_link_libraries(tune_hipblaslt PRIVATE hip::host roc::hipblas roc::hipblaslt)
++    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/hip/tune_hipblaslt.cpp")
++      add_executable(tune_hipblaslt tools/hip/tune_hipblaslt.cpp)
++      target_link_libraries(tune_hipblaslt PRIVATE hip::host roc::hipblas roc::hipblaslt)
++    endif()
+   endif()
+   if(STRATA_ENABLE_HIP AND STRATA_ROCBLAS_AVAILABLE)
+     # the prompt path's rocBLAS solution table (STRATA_ROCBLAS_TUNING; tools/hip/tune_rocblas makes one)
+@@ -1820,14 +1822,16 @@ if(STRATA_NATIVE_EXPERTS)
+     list(APPEND _strata_hip_tests hip_prefill_fused_iq)
+ 
+     # Numerical diagnostic: synthetic layouts by default, optional first-expert IQ3_XXS/IQ4_NL check with a pack.
+-    add_executable(hip_prefill_mmq_parity tests/hip/prefill_mmq_parity.cpp)
+-    target_include_directories(hip_prefill_mmq_parity PRIVATE "${_strata_gg}/include")
+-    target_link_libraries(hip_prefill_mmq_parity PRIVATE strata_prefill)
+-    add_test(NAME hip_prefill_mmq_parity COMMAND hip_prefill_mmq_parity)
+-    set_tests_properties(hip_prefill_mmq_parity PROPERTIES TIMEOUT 120)
+-    list(APPEND _strata_hip_tests hip_prefill_mmq_parity)
++    if(STRATA_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/hip/prefill_mmq_parity.cpp")
++      add_executable(hip_prefill_mmq_parity tests/hip/prefill_mmq_parity.cpp)
++      target_include_directories(hip_prefill_mmq_parity PRIVATE "${_strata_gg}/include")
++      target_link_libraries(hip_prefill_mmq_parity PRIVATE strata_prefill)
++      add_test(NAME hip_prefill_mmq_parity COMMAND hip_prefill_mmq_parity)
++      set_tests_properties(hip_prefill_mmq_parity PROPERTIES TIMEOUT 120)
++      list(APPEND _strata_hip_tests hip_prefill_mmq_parity)
++    endif()
+   endif()
+-  if(STRATA_ENABLE_HIP)
++  if(STRATA_ENABLE_HIP AND STRATA_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/hip/ple_iq4.cpp")
+     # Optional real-model diagnostic: pass the GGUF shard containing the native PLE key.
+     add_executable(hip_ple_iq4 tests/hip/ple_iq4.cpp)
+     target_link_libraries(hip_ple_iq4 PRIVATE strata_kernels strata_hip_runtime ggml-base)
+@@ -2079,7 +2083,7 @@ if(STRATA_NATIVE_EXPERTS AND (STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP) AND NOT S
+   endif()
+   if(STRATA_ENABLE_HIP)
+     target_compile_definitions(strata_poly_mmq PRIVATE GGML_USE_HIP=1)
+-    target_link_libraries(strata_poly_mmq PUBLIC ggml-base hip::host)
++    target_link_libraries(strata_poly_mmq PUBLIC ggml-base hip::host roc::hipblas)
+   else()
+     target_link_libraries(strata_poly_mmq PUBLIC ggml-base ${_strata_gpu_runtime_target})
+   endif()
+diff --git a/include/strata/hip_compat/cuda_runtime.h b/include/strata/hip_compat/cuda_runtime.h
+index 72a77a19f39f44542d2dfd57860ca36d6e521ddc..783e0899139b9369c59807a679dfe8ac765821fe 100644
+--- a/include/strata/hip_compat/cuda_runtime.h
++++ b/include/strata/hip_compat/cuda_runtime.h
+@@ -26,6 +26,7 @@
+ #define cudaDeviceEnablePeerAccess hipDeviceEnablePeerAccess
+ #define cudaDeviceDisablePeerAccess hipDeviceDisablePeerAccess
+ #define cudaDeviceProp hipDeviceProp_t
++#define cudaDeviceScheduleBlockingSync hipDeviceScheduleBlockingSync
+ #define cudaDeviceSynchronize hipDeviceSynchronize
+ #define cudaDriverGetVersion hipDriverGetVersion
+ #define cudaErrorNotReady hipErrorNotReady
+@@ -152,6 +153,7 @@ inline hipError_t mem_get_info(size_t* free_bytes, size_t* total_bytes) {
+ #define cudaPeekAtLastError hipPeekAtLastError
+ #define cudaRuntimeGetVersion hipRuntimeGetVersion
+ #define cudaSetDevice hipSetDevice
++#define cudaSetDeviceFlags hipSetDeviceFlags
+ #define cudaStreamBeginCapture hipStreamBeginCapture
+ #define cudaStreamCaptureModeThreadLocal hipStreamCaptureModeThreadLocal
+ #define cudaStreamCaptureStatus hipStreamCaptureStatus

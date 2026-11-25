@@ -1,0 +1,455 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -2334,6 +2338,10 @@ if(STRATA_FRONTEND AND STRATA_NATIVE_EXPERTS)
+   target_compile_features(picture_cache_test PRIVATE cxx_std_20)
+   find_package(Threads REQUIRED)
+   target_link_libraries(picture_cache_test PRIVATE Threads::Threads)
++  add_executable(sampling_defaults_test EXCLUDE_FROM_ALL frontend/tests/sampling_defaults_test.cpp)
++  target_include_directories(sampling_defaults_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/frontend)
++  target_link_libraries(sampling_defaults_test PRIVATE llama-common)
++  target_compile_features(sampling_defaults_test PRIVATE cxx_std_20)
+ endif()
+ 
+ if(STRATA_BUILD_TESTS)
+diff --git a/Makefile b/Makefile
+index 53cee2811900ed1d2b5f3fe390d9cfb9c9fbfe1b..794a64aaf3ae9874af8840d63dd73f153c7e351e 100644
+--- a/Makefile
++++ b/Makefile
+@@ -89,11 +89,13 @@ frontend:
+ # backpressure, child exit, ERR) and the HTTP surface a coding agent touches (frontend/tests/e2e.sh).  Needs python3
+ # and curl; no GPU and no model.  Runs in the CUDA-free build directory, so it works on the build box and on a laptop.
+ test: frontend
+-	cmake --build $(BUILD_DIR)-frontend -j $(JOBS) --target engine_test literals_test picture_cache_test hy4_sampling_test
++	cmake --build $(BUILD_DIR)-frontend -j $(JOBS) --target engine_test literals_test picture_cache_test hy4_sampling_test sampling_defaults_test
+ 	$(BUILD_DIR)-frontend/bin/engine_test frontend/tests/fake-engine.py
+ 	$(BUILD_DIR)-frontend/bin/hy4_sampling_test
+ 	$(BUILD_DIR)-frontend/bin/literals_test
+ 	$(BUILD_DIR)-frontend/bin/picture_cache_test
++	$(BUILD_DIR)-frontend/bin/sampling_defaults_test
++	python3 frontend/tests/sampling-defaults-e2e.py $(BUILD_DIR)-frontend/bin/unbiased-strata
+ 	frontend/tests/e2e.sh $(BUILD_DIR)-frontend/bin/unbiased-strata
+ 
+ clean:
+diff --git a/frontend/main.cpp b/frontend/main.cpp
+index e8881c37ac961d1d65b573adcbd12f54fa3f10fd..5ce9d0e076e79a573ae2cdf94091cb93d80e2277 100644
+--- a/frontend/main.cpp
++++ b/frontend/main.cpp
+@@ -53,6 +53,8 @@ void usage() {
+         "  -m, --model FILE       vocabulary and chat template from a GGUF or a Hy4 or Inkling .strata text checkpoint\n"
+         "  --host, --port, --api-key, --threads-http, --temp, --top-k, --top-p, --min-p, --reasoning-format,\n"
+         "  --chat-template-kwargs, --alias ...   llama-server options (see llama-server --help)\n"
++        "                         Qwen3.6/3.8 sampling defaults follow the model card and thinking mode;\n"
++        "                         explicit sampling flags override the card, request fields override flags\n"
+         "  --mmproj FILE          the model's vision projector: image_url parts are encoded in this process and\n"
+         "                         handed to the engine (Qwen or Inkling); on the CPU (--threads N) unless --mmproj-gpu\n"
+         "  --mmproj-gpu           encode on the card: about 1 GB of VRAM plus work buffers, taken before the engine\n"
+@@ -207,7 +209,13 @@ int main(int argc, char ** argv) {
+         return 1;
+     }
+ 
+-    if (!ctx_server.load(params, err)) {
++    // llama.cpp tracks explicit sampling flags, but not --presence-penalty. Preserve an explicit zero too.
++    bool presence_penalty_override = false;
++    for (const char * arg : llama_argv) {
++        const std::string a = arg;
++        if (a == "--presence-penalty" || a.rfind("--presence-penalty=", 0) == 0) presence_penalty_override = true;
++    }
++    if (!ctx_server.load(params, err, presence_penalty_override)) {
+         SRV_ERR("%s\n", err.c_str());
+         clean_up();
+         return 1;
+diff --git a/frontend/sampling_defaults.hpp b/frontend/sampling_defaults.hpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..f717a0facafd2824e1c555c79591bcb08d67ef62
+--- /dev/null
++++ b/frontend/sampling_defaults.hpp
+@@ -0,0 +1,49 @@
++#pragma once
++
++#include "common.h"
++#include "json.h"
++
++namespace strata_frontend {
++
++// Keep thinking selection aligned with oaicompat_chat_params_parse in server-common.cpp.
++inline bool sampling_thinking(const common_json & body, bool enabled,
++                              const std::map<std::string, std::string> & template_kwargs) {
++    auto it = template_kwargs.find("enable_thinking");
++    if (it != template_kwargs.end()) {
++        if (it->second == "true") enabled = true;
++        if (it->second == "false") enabled = false;
++    }
++    if (body.contains("chat_template_kwargs")) {
++        const auto & kwargs = body.at("chat_template_kwargs");
++        if (kwargs.contains("enable_thinking") && kwargs.at("enable_thinking").is_boolean()) {
++            enabled = kwargs.at("enable_thinking").get<bool>();
++        }
++    }
++    if (body.contains("reasoning_effort") && body.at("reasoning_effort").is_string()
++        && body.at("reasoning_effort").get<std::string>() == "none") enabled = false;
++    return enabled;
++}
++
++// Qwen's Best Practices. Unknown architectures retain llama.cpp's defaults.
++// Server flags override the card field by field; request fields are filled only when absent.
++inline common_json sampling_defaults(const std::string & arch, bool thinking,
++                                     const common_params_sampling & s, bool presence_override) {
++    if (arch != "qwen4exp" && arch != "qwen35moe") return common_json::object();
++    const auto mask = s.user_sampling_config;
++    return {
++        {"temperature", mask & COMMON_PARAMS_SAMPLING_CONFIG_TEMP ? s.temp : thinking ? 1.0f : 0.7f},
++        {"top_p", mask & COMMON_PARAMS_SAMPLING_CONFIG_TOP_P ? s.top_p : thinking ? 0.95f : 0.8f},
++        {"top_k", mask & COMMON_PARAMS_SAMPLING_CONFIG_TOP_K ? s.top_k : 20},
++        {"min_p", mask & COMMON_PARAMS_SAMPLING_CONFIG_MIN_P ? s.min_p : 0.0f},
++        {"repeat_penalty", mask & COMMON_PARAMS_SAMPLING_CONFIG_PENALTY_REPEAT ? s.penalty_repeat : 1.0f},
++        {"presence_penalty", presence_override ? s.penalty_present : thinking && arch == "qwen4exp" ? 0.0f : 1.5f},
++    };
++}
++
++inline void fill_sampling_defaults(common_json & body, const common_json & defaults) {
++    for (const auto & item : defaults.items()) {
++        if (!body.contains(item.key()) || body.at(item.key()).is_null()) body[item.key()] = item.value();
++    }
++}
++
++} // namespace strata_frontend
+diff --git a/frontend/strata_context.cpp b/frontend/strata_context.cpp
+index 9c3ae2f1550606e93716f6d521225bca27cbb956..7b0d8c28de1129bdd789e5385ab250e0a4aee229 100644
+--- a/frontend/strata_context.cpp
++++ b/frontend/strata_context.cpp
+@@ -12,6 +12,7 @@
+ #endif
+ #include "literals.hpp"
+ #include "picture_cache.hpp"
++#include "sampling_defaults.hpp"
+ 
+ #include "server-common.h"
+ #include "server-task.h"
+@@ -183,6 +184,12 @@ std::string file_stem(const std::string & path) {
+ 
+ struct strata_context_impl {
+     common_params params;
++    std::string sampling_arch;
++    bool presence_penalty_override = false;
++
++    json sampling_defaults(bool thinking) const {
++        return strata_frontend::sampling_defaults(sampling_arch, thinking, params.sampling, presence_penalty_override);
++    }
+ 
+     llama_model *       model = nullptr;
+     const llama_vocab * vocab = nullptr;
+@@ -1138,7 +1145,11 @@ struct strata_context_impl {
+             server_task task = server_task(SERVER_TASK_TYPE_COMPLETION);
+             task.id     = rd.get_new_id();
+             task.tokens = std::move(inputs[0]);
+-            task.params = server_schema::eval_llama_cmpl_schema(vocab, params, logit_bias_eog, data);
++            json resolved = data;
++            const bool thinking = strata_frontend::sampling_thinking(
++                json::object(), chat_params.enable_thinking, chat_params.chat_template_kwargs);
++            strata_frontend::fill_sampling_defaults(resolved, sampling_defaults(thinking));
++            task.params = server_schema::eval_llama_cmpl_schema(vocab, params, logit_bias_eog, resolved);
+             if (engine_is_hy4 && (!task.params.sampling.logit_bias.empty() || data.value("ignore_eos", false))) {
+                 throw std::invalid_argument("Hy4 does not implement logit_bias or ignore_eos");
+             }
+@@ -1355,7 +1366,7 @@ void strata_context::set_picture_cache(size_t entries, size_t bytes) {
+     impl->pictures.configure(entries, bytes);
+ }
+ 
+-bool strata_context::load(common_params & params, std::string & err) {
++bool strata_context::load(common_params & params, std::string & err, bool presence_penalty_override) {
+     auto & I = *impl;
+     if (I.engine_is_hy4) {
+         auto & defaults = params.default_template_kwargs;
+@@ -1371,6 +1382,7 @@ bool strata_context::load(common_params & params, std::string & err) {
+         }
+     }
+     I.params = params;
++    I.presence_penalty_override = presence_penalty_override;
+ 
+     // the vocabulary and the chat template, from the GGUF's metadata; no tensor is read
+     llama_model_params mparams = llama_model_default_params();
+@@ -1407,7 +1419,8 @@ bool strata_context::load(common_params & params, std::string & err) {
+             return id >= 0 && gguf_get_kv_type(meta.get(), id) == GGUF_TYPE_STRING
+                 ? gguf_get_val_str(meta.get(), id) : "";
+         };
+-        if (meta_string("general.architecture") == "inkling2") {
++        const std::string arch = meta_string("general.architecture");
++        if (arch == "inkling2" || arch == "inkling2_loop") {
+             const std::string pre = meta_string("tokenizer.ggml.pre");
+             if (pre == "inkling2" || pre == "inkling" || pre == "gpt-4o") {
+                 snprintf(ov[1].key, sizeof(ov[1].key), "%s", "tokenizer.ggml.pre");
+@@ -1424,6 +1437,15 @@ bool strata_context::load(common_params & params, std::string & err) {
+         return false;
+     }
+     I.vocab      = llama_model_get_vocab(I.model);
++    char arch[128] = {};
++    if (llama_model_meta_val_str(I.model, "general.architecture", arch, sizeof arch) > 0) I.sampling_arch = arch;
++    for (bool thinking : {true, false}) {
++        const auto defaults = I.sampling_defaults(thinking);
++        if (!defaults.empty()) {
++            SRV_INF("sampling defaults (%s, %s): %s; request fields override these\n", I.sampling_arch.c_str(),
++                    thinking ? "thinking" : "non-thinking", defaults.dump().c_str());
++        }
++    }
+     I.init_literals();
+     I.model_path = params.model.path;
+     I.model_name = params.model_alias.empty() ? file_stem(params.model.path) : *params.model_alias.begin();
+@@ -1622,6 +1644,9 @@ void strata_context::init_routes(server_http_context & http) {
+         const bool no_thinking = I->inkling_chat &&
+             strata_frontend::prepare_inkling_chat(body, I->params.default_template_kwargs);
+         json data = oaicompat_chat_params_parse(body, I->chat_params, files);
++        const bool thinking = strata_frontend::sampling_thinking(
++            body, I->chat_params.enable_thinking, I->chat_params.chat_template_kwargs);
++        strata_frontend::fill_sampling_defaults(data, I->sampling_defaults(thinking));
+         if (I->inkling_chat && !I->params.force_pure_content_parser) {
+             auto tools = body.value("tools", json::array());
+             if (body.value("tool_choice", json("auto")) == "none") tools.clear();
+diff --git a/frontend/strata_context.hpp b/frontend/strata_context.hpp
+index 1aa06ee2a92668e83c50b14e6e48ba59ab18451c..c8630427b449e53d326bcdf5b64de1eefc67d59b 100644
+--- a/frontend/strata_context.hpp
++++ b/frontend/strata_context.hpp
+@@ -31,7 +31,7 @@ struct strata_context {
+     bool start_engine(const common_params & params, const std::string & engine_exe, const std::vector<std::string> & engine_args, std::string & err);
+ 
+     // Loads the vocabulary and chat template from the GGUF (vocab only, no tensors) and waits for the engine's READY.
+-    bool load(common_params & params, std::string & err);
++    bool load(common_params & params, std::string & err, bool presence_penalty_override = false);
+     // --picture-cache: how many pictures' encoded rows are kept for the turns that resend them (0: none); before load()
+     void set_picture_cache(size_t entries, size_t bytes);
+ 
+diff --git a/frontend/tests/fake-engine.py b/frontend/tests/fake-engine.py
+index 6ee7378b4b3cc7d05328edb34bcd721bd3a782b1..c8defbac7544fd11ce9dbae46992736f1e52d512 100755
+--- a/frontend/tests/fake-engine.py
++++ b/frontend/tests/fake-engine.py
+@@ -15,6 +15,7 @@ Environment variables choose the answers, so one script covers the cases:
+   FAKE_DIE_AFTER  if set, exit 3 after emitting this many tokens of the first request
+   FAKE_NO_STOP    if set, READY without "stop": STOP is ignored and the request runs to its end
+   FAKE_PROMPT_N   if set, lie about the prompt size in DONE (mismatch test)
++  FAKE_REQUEST_LOG append received request lines to this file (sampling tests)
+ """
+ import os
+ import select
+@@ -65,6 +66,9 @@ def stop_requested():
+ 
+ while True:
+     line = readline()
++    if env("FAKE_REQUEST_LOG"):
++        with open(env("FAKE_REQUEST_LOG"), "a") as log:
++            log.write(line + "\n")
+     if line == "QUIT":
+         sys.exit(0)
+     if line == "STOP" or line == "":
+diff --git a/frontend/tests/sampling-defaults-e2e.py b/frontend/tests/sampling-defaults-e2e.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..b297e8dece02ea2d001b32779c2541d4afafa5cb
+--- /dev/null
++++ b/frontend/tests/sampling-defaults-e2e.py
+@@ -0,0 +1,136 @@
++#!/usr/bin/env python3
++"""Check engine-bound sampling through the real HTTP frontend, without weights or a GPU."""
++import contextlib
++import json
++import os
++from pathlib import Path
++import socket
++import struct
++import subprocess
++import sys
++import tempfile
++import time
++import urllib.error
++import urllib.request
++
++HERE = Path(__file__).resolve().parent
++VOCAB = HERE.parent.parent / "third_party/llama.cpp/models/ggml-vocab-qwen35.gguf"
++BIN = str(Path(sys.argv[1]).resolve())
++
++
++def replace_gguf_string(data, key, value):
++    key = key.encode()
++    pos = data.index(struct.pack("<Q", len(key)) + key + struct.pack("<I", 8)) + 8 + len(key) + 4
++    size = struct.unpack_from("<Q", data, pos)[0]
++    return data[:pos] + struct.pack("<Q", len(value)) + value.encode() + data[pos + 8 + size:]
++
++
++def fixture(path, arch):
++    data = VOCAB.read_bytes()
++    assert struct.unpack_from("<Q", data, 8)[0] == 0, "fixture must have no tensors"
++    data = replace_gguf_string(data, "general.architecture", arch)
++    if arch == "inkling2_loop":
++        data = replace_gguf_string(data, "tokenizer.ggml.pre", "inkling2")
++    path.write_bytes(data)
++
++
++@contextlib.contextmanager
++def server(work, arch, *args):
++    # Deliberately unrelated filename: derivatives are selected by GGUF architecture, not name.
++    model = work / "DavidAU-variant.gguf"
++    fixture(model, arch)
++    capture = work / "requests.log"
++    capture.write_text("")
++    with socket.socket() as sock:
++        sock.bind(("127.0.0.1", 0))
++        port = sock.getsockname()[1]
++    url = f"http://127.0.0.1:{port}"
++    with (work / "server.log").open("w+") as log:
++        proc = subprocess.Popen([
++            BIN, "--engine", str(HERE / "fake-engine.py"), "-m", str(model),
++            "--host", "127.0.0.1", "--port", str(port), "--jinja",
++            "--chat-template-file", str(HERE / "data/qwen3-chat-template.jinja"), *args,
++        ], stdout=log, stderr=log,
++            env={**os.environ, "FAKE_N_TOKENS": "1", "FAKE_REQUEST_LOG": str(capture)})
++        try:
++            for _ in range(200):
++                try:
++                    urllib.request.urlopen(url + "/health", timeout=1).close()
++                    break
++                except (urllib.error.URLError, TimeoutError):
++                    if proc.poll() is not None:
++                        log.seek(0)
++                        raise AssertionError(log.read())
++                    time.sleep(0.1)
++            else:
++                raise AssertionError("server readiness timed out")
++
++            def request(settings=None, endpoint="/v1/chat/completions", expected_status=200):
++                body = {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 1}
++                if endpoint != "/v1/chat/completions":
++                    body = {"prompt": "hi", "max_tokens": 1}
++                body.update(settings or {})
++                req = urllib.request.Request(url + endpoint, data=json.dumps(body).encode(),
++                                             headers={"Content-Type": "application/json"})
++                try:
++                    with urllib.request.urlopen(req, timeout=10) as res:
++                        assert res.status == expected_status
++                        res.read()
++                except urllib.error.HTTPError as exc:
++                    assert exc.code == expected_status, exc.read()
++                    return {}
++                line = [line for line in capture.read_text().splitlines() if line.startswith("GEN ")][-1]
++                return {key: float(value) for key, value in
++                        (field.split("=", 1) for field in line.split()[2:-1])}
++
++            yield request
++        finally:
++            proc.terminate()
++            try:
++                proc.wait(timeout=10)
++            except subprocess.TimeoutExpired:
++                proc.kill()
++                proc.wait()
++
++
++with tempfile.TemporaryDirectory(prefix="strata-sampling-") as tmp:
++    work = Path(tmp)
++    for arch in ("qwen4exp", "qwen35moe"):
++        with server(work, arch) as request:
++            got = request()
++            assert got["temperature"] == 1 and got["top_p"] == .95 and got["top_k"] == 20, got
++            assert "min_p" not in got, got
++            assert got.get("penalty_present", 0) == (1.5 if arch == "qwen35moe" else 0), got
++            for mode in ({"chat_template_kwargs": {"enable_thinking": False}}, {"reasoning_effort": "none"}):
++                got = request(mode)
++                assert got["temperature"] == .7 and got["top_p"] == .8 and got["penalty_present"] == 1.5, got
++            assert "temperature" not in request({"temperature": 0})
++            got = request({"temperature": None, "top_k": None, "min_p": None})
++            assert got["temperature"] == 1 and got["top_k"] == 20 and "min_p" not in got, got
++            got = request({"temperature": .6, "top_k": 10, "min_p": .1, "presence_penalty": 0})
++            assert got["temperature"] == .6 and got["top_k"] == 10 and got["min_p"] == .1, got
++            assert got.get("penalty_present", 0) == 0, got
++            assert request(endpoint="/v1/completions")["temperature"] == 1
++            request({"temperature": "invalid"}, expected_status=400)
++            assert request()["temperature"] == 1  # no cross-request mutation
++
++    with server(work, "qwen35moe", "--temp", "0.8", "--top-k", "40", "--min-p", "0.05",
++                "--presence-penalty", "0") as request:
++        got = request({"reasoning_effort": "none"})
++        assert got["temperature"] == .8 and got["top_k"] == 40 and got["min_p"] == .05, got
++        assert got["top_p"] == .8 and got.get("penalty_present", 0) == 0, got
++        assert request({"temperature": 1})["temperature"] == 1
++    with server(work, "qwen4exp", "--temp", "0") as request:
++        assert "temperature" not in request()
++        assert request({"temperature": 1})["temperature"] == 1
++    with server(work, "qwen4exp", "--chat-template-kwargs", '{"enable_thinking":false}') as request:
++        assert request()["temperature"] == .7
++        assert request({"chat_template_kwargs": {"enable_thinking": True}})["temperature"] == 1
++    with server(work, "qwen35") as request:
++        got = request()
++        assert got["temperature"] == .8 and got["top_k"] == 40 and got["min_p"] == .05, got
++    # A new-layout Inkling GGUF needs the Inkling tokenizer fallback before chat can reach the engine.
++    with server(work, "inkling2_loop") as request:
++        assert request({"temperature": .5})["temperature"] == .5
++
++print("PASS: sampling defaults and overrides, raw completions, Inkling tokenizer fallback")
+diff --git a/frontend/tests/sampling_defaults_test.cpp b/frontend/tests/sampling_defaults_test.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..a80f2123e132e501764e808d5d62980bb4435455
+--- /dev/null
++++ b/frontend/tests/sampling_defaults_test.cpp
+@@ -0,0 +1,65 @@
++#include "sampling_defaults.hpp"
++
++#include <cstdio>
++
++using namespace strata_frontend;
++using json = common_json;
++static int failures = 0;
++#define CHECK(cond) do { if (!(cond)) { std::fprintf(stderr, "FAIL %d: %s\n", __LINE__, #cond); ++failures; } } while (0)
++
++int main() {
++    common_params_sampling s;
++    const auto flash = sampling_defaults("qwen4exp", true, s, false);
++    CHECK(flash.at("temperature").get<float>() == 1.0f);
++    CHECK(flash.at("top_p").get<float>() == 0.95f);
++    CHECK(flash.at("top_k").get<int>() == 20);
++    CHECK(flash.at("min_p").get<float>() == 0.0f);
++    CHECK(flash.at("presence_penalty").get<float>() == 0.0f);
++    CHECK(flash.at("repeat_penalty").get<float>() == 1.0f);
++    CHECK(sampling_defaults("qwen35moe", true, s, false).at("presence_penalty").get<float>() == 1.5f);
++    for (const char * arch : {"qwen4exp", "qwen35moe"}) {
++        const auto instruct = sampling_defaults(arch, false, s, false);
++        CHECK(instruct.at("temperature").get<float>() == 0.7f);
++        CHECK(instruct.at("top_p").get<float>() == 0.8f);
++        CHECK(instruct.at("presence_penalty").get<float>() == 1.5f);
++    }
++    CHECK(sampling_defaults("unknown", true, s, false).empty());
++    CHECK(sampling_defaults("", false, s, false).empty());
++
++    // Explicit server values equal to generic defaults and zero are still overrides.
++    s.user_sampling_config = COMMON_PARAMS_SAMPLING_CONFIG_TEMP | COMMON_PARAMS_SAMPLING_CONFIG_TOP_K
++                          | COMMON_PARAMS_SAMPLING_CONFIG_MIN_P | COMMON_PARAMS_SAMPLING_CONFIG_TOP_P
++                          | COMMON_PARAMS_SAMPLING_CONFIG_PENALTY_REPEAT;
++    s.temp = 0; s.top_k = 40; s.top_p = 0.9f; s.min_p = 0.05f; s.penalty_repeat = 1.1f;
++    s.penalty_present = 0;
++    auto configured = sampling_defaults("qwen35moe", true, s, true);
++    CHECK(configured.at("temperature").get<float>() == 0);
++    CHECK(configured.at("top_k").get<int>() == 40);
++    CHECK(configured.at("top_p").get<float>() == 0.9f);
++    CHECK(configured.at("min_p").get<float>() == 0.05f);
++    CHECK(configured.at("repeat_penalty").get<float>() == 1.1f);
++    CHECK(configured.at("presence_penalty").get<float>() == 0);
++    json request = {{"temperature", 0.6}, {"top_k", 0}, {"min_p", 0}, {"presence_penalty", 0}};
++    fill_sampling_defaults(request, configured);
++    CHECK(request.at("temperature").get<float>() == 0.6f);
++    CHECK(request.at("top_k").get<int>() == 0);
++    CHECK(request.at("min_p").get<float>() == 0);
++    CHECK(request.at("presence_penalty").get<float>() == 0);
++    json greedy = {{"temperature", 0}};
++    fill_sampling_defaults(greedy, flash);
++    CHECK(greedy.at("temperature").get<float>() == 0);
++    json unspecified = {{"temperature", nullptr}, {"top_k", nullptr}};
++    fill_sampling_defaults(unspecified, flash);
++    CHECK(unspecified.at("temperature").get<float>() == 1);
++    CHECK(unspecified.at("top_k").get<int>() == 20);
++
++    CHECK(sampling_thinking(json::object(), true, {}));
++    CHECK(!sampling_thinking(json::object(), true, {{"enable_thinking", "false"}}));
++    CHECK(sampling_thinking({{"chat_template_kwargs", {{"enable_thinking", true}}}}, false,
++                            {{"enable_thinking", "false"}}));
++    CHECK(!sampling_thinking({{"chat_template_kwargs", {{"enable_thinking", false}}}}, true, {}));
++    CHECK(!sampling_thinking({{"reasoning_effort", "none"},
++                              {"chat_template_kwargs", {{"enable_thinking", true}}}}, true, {}));
++    CHECK(!sampling_thinking({{"reasoning_effort", "high"}}, false, {}));
++    return failures ? 1 : 0;
++}
