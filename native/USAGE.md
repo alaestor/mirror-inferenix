@@ -47,10 +47,10 @@ trust.
 ./native/build.sh qwen38 --gpu "$gpu"
 ```
 
-The fetch step downloads and verifies the pinned archives. The build uses
-local sources. Both write under `native/.work/`; rerun them after updating
-the checkout. If compilation slows your desktop, add `--jobs 2` to the
-build command. The same applies to Inkling.
+The fetch step verifies the pinned Git commits and exports their source
+trees. The build uses local sources. Both write under `native/.work/`;
+rerun them after updating the checkout. If compilation slows your desktop,
+add `--jobs 2` to the build command. The same applies to Inkling.
 
 If you already have a working pack, skip preparation. Otherwise, create
 the Python environment and prepare the pack once. This uses additional

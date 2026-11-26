@@ -11,7 +11,8 @@ pkgs.stdenv.mkDerivation {
   inherit (pin) version;
   src = pkgs.fetchurl {
     name = "strata-${pin.version}-source.tar.gz";
-    inherit (pin) url sha256;
+    url = "https://codeload.github.com/${pin.owner}/${pin.repo}/tar.gz/${pin.rev}";
+    inherit (pin) sha256;
   };
   cmakeDir = "../engine/src/inkling2";
   nativeBuildInputs = [

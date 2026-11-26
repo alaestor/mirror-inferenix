@@ -3,8 +3,8 @@
 [`sources.json`](sources.json) pins robertkarl/UnbiasedStrata at `9f75192` and
 the exact llama.cpp revision recorded by that commit. Nix and the native
 builder share these pins and the ordered patch list. Nix verifies the
-unpacked trees with `hash`; the native fetcher verifies archive bytes with
-`archiveSha256`. Check both digests when updating either source.
+unpacked trees with `hash`. The native fetcher checks the Git commit IDs
+and verifies that UnbiasedStrata's llama.cpp gitlink matches the separate pin.
 
 [`default.nix`](default.nix) builds the
 Qwen HIP engines and HTTP frontend, or just the CPU frontend for the Inkling

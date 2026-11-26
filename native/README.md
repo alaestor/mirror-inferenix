@@ -5,7 +5,7 @@ Build and run Inkling 2 Mini or Qwen3.8 Swift on a Radeon without Nix or Podman.
 ## Dependencies
 
 - x86-64 Linux with glibc, an AVX2 CPU, and a working `amdgpu` driver.
-- Bash, GNU coreutils, grep, util-linux, curl, jq, tar, gzip, and patch.
+- Bash, Git 2.29 or newer, GNU coreutils, grep, util-linux, jq, tar, and patch.
 - CMake 3.24 or newer, Ninja, and a C/C++20 toolchain.
 - ROCm HIP development tools and runtime.
 - For Qwen: hipBLAS development libraries and their rocBLAS dependencies,
